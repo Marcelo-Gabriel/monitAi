@@ -1,0 +1,1047 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Dashboard IoT – Indústria de Pijamas (HTML + MQTT + Chart.js)</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    /* rolagem suave nas listas */
+    .scroll-smooth { scroll-behavior: smooth; }
+
+    /* NOVO: Estilo para o modo de alto contraste */
+    .contrast {
+      background-color: #000 !important;
+      color: #f1f1f1 !important;
+    }
+    .contrast .bg-white, .contrast .bg-gray-50, .contrast .bg-gray-100 {
+      background-color: #111 !important;
+      color: #fff !important;
+      border-color: #555 !important;
+    }
+    .contrast .text-gray-500, .contrast .text-gray-600, .contrast .text-gray-900 {
+        color: #f1f1f1 !important;
+    }
+    .contrast header, .contrast .bg-white\/70 {
+        background-color: rgba(20, 20, 20, 0.7) !important;
+    }
+  </style>
+</head>
+<body class="min-h-screen bg-gradient-to-b from-slate-50 to-white text-gray-900 p-4 md:p-6 max-w-7xl mx-auto">
+  <header class="sticky top-0 z-20 bg-white/70 backdrop-blur border border-slate-200/60 shadow-sm rounded-2xl px-4 py-3 flex flex-col md:flex-row gap-3 md:items-center md:justify-between mb-4">
+    <h1 class="text-2xl md:text-3xl font-bold tracking-tight">PAINEL DE PRODUÇÃO</h1>
+    <div class="flex gap-2 items-center">
+      <span id="statusBadge" class="px-3 py-1 rounded-full text-sm bg-red-100 text-red-700">Desconectado</span>
+      <a href="teste.html" class="px-3.5 py-2 rounded-xl bg-gray-600 text-white hover:bg-gray-700 transition-colors focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500">Ir para Teste</a>
+      
+      <button id="btnDisconnect" class="hidden px-3.5 py-2 rounded-xl bg-gray-200 hover:bg-gray-300 transition-colors focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-400">Desconectar</button>
+      <button id="btnConnect" class="px-3.5 py-2 rounded-xl bg-blue-600 text-white hover:bg-blue-700 transition-colors focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500">Conectar</button>
+    </div>
+  </header>
+
+  <section class="grid grid-cols-1 md:grid-cols-4 gap-3 mb-6">
+    <div class="p-4 bg-white rounded-2xl shadow-sm border border-slate-200/70 hover:shadow-md transition-shadow">
+      <h2 class="font-semibold mb-3">Conexão</h2>
+      <label class="text-sm">URL (WSS)</label>
+      <input id="inpUrl" class="w-full border rounded-xl p-2 mb-2" placeholder="wss://broker.emqx.io:8084/mqtt" />
+      <div class="grid grid-cols-2 gap-2">
+        <div>
+          <label class="text-sm">Usuário</label>
+          <input id="inpUser" class="w-full border rounded-xl p-2" />
+        </div>
+        <div>
+          <label class="text-sm">Senha</label>
+          <input id="inpPass" type="password" class="w-full border rounded-xl p-2" />
+        </div>
+      </div>
+      <label class="text-sm mt-2 block">Prefixo de tópicos</label>
+      <input id="inpPrefix" class="w-full border rounded-xl p-2" placeholder="pijamas" />
+      <p class="text-xs text-gray-500 mt-2">Ex.: prefix/env/temp, prefix/line/production…</p>
+    </div>
+
+    <div class="p-4 bg-white rounded-2xl shadow-sm border border-slate-200/70 hover:shadow-md transition-shadow flex flex-col justify-between">
+      <div>
+        <h2 class="font-semibold mb-2">Produção</h2>
+        <div id="lblProduction" class="text-3xl font-bold">0</div>
+        <div class="text-sm text-gray-500">Meta: <span id="lblTarget">1000</span> | Atingido: <span id="lblHit">0%</span></div>
+        <div id="pausedIndicator" class="hidden mt-3 text-sm text-amber-700 bg-amber-100 p-2 rounded-lg">
+          Produção pausada há <span id="pausedTimer" class="font-semibold">0s</span>.
+        </div>
+      </div>
+      <div class="flex gap-2 mt-3">
+        <button class="px-3 py-2 rounded-xl bg-emerald-600 text-white hover:bg-emerald-700" onclick="startLine()">Iniciar Linha</button>
+        <button class="px-3 py-2 rounded-xl bg-rose-600 text-white hover:bg-rose-700" onclick="stopLine()">Parar Linha</button>
+      </div>
+    </div>
+
+    <div class="p-4 bg-white rounded-2xl shadow-sm border border-slate-200/70 hover:shadow-md transition-shadow">
+      <h2 class="font-semibold mb-2">Ambiente</h2>
+      <div class="flex gap-6">
+        <div>
+          <div class="text-sm text-gray-500">Temperatura</div>
+          <div id="lblTemp" class="text-2xl font-bold">--</div>
+        </div>
+        <div>
+          <div class="text-sm text-gray-500">Umidade</div>
+          <div id="lblHum" class="text-2xl font-bold">--</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="p-4 bg-white rounded-2xl shadow-sm border border-slate-200/70 hover:shadow-md transition-shadow">
+      <h2 class="font-semibold mb-2">Meta do turno</h2>
+      <div class="flex gap-2">
+        <input id="inpTarget" type="number" class="w-full border rounded-xl p-2" />
+        <button class="px-3 py-2 rounded-xl bg-indigo-600 text-white hover:bg-indigo-700" onclick="sendTarget()">Enviar</button>
+      </div>
+      <button class="mt-2 px-3 py-2 rounded-xl bg-gray-200 hover:bg-gray-300 w-full" onclick="resetCounters()">Zerar Contadores</button>
+    </div>
+  </section>
+
+  <section class="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-6">
+    <div class="bg-white rounded-2xl shadow-sm border border-slate-200/70 hover:shadow-md transition-shadow p-3 lg:col-span-2">
+      <div class="font-semibold mb-2">Produção por minuto</div>
+      <div class="h-72"><canvas id="chartProduction"></canvas></div>
+    </div>
+    <div class="bg-white rounded-2xl shadow-sm border border-slate-200/70 hover:shadow-md transition-shadow p-3">
+      <div class="font-semibold mb-2">Top Defeitos</div>
+      <div class="h-72"><canvas id="chartDefects"></canvas></div>
+    </div>
+  </section>
+
+  <section class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
+    <div class="bg-white rounded-2xl shadow-sm border border-slate-200/70 hover:shadow-md transition-shadow p-3">
+      <div class="font-semibold mb-2">Temperatura & Umidade</div>
+      <div class="h-72"><canvas id="chartEnv"></canvas></div>
+    </div>
+
+    <div class="bg-white rounded-2xl shadow-sm border border-slate-200/70 hover:shadow-md transition-shadow p-3">
+      <div class="font-semibold mb-2">Máquinas & OEE</div>
+      <div class="text-sm text-gray-600 mb-2">OEE médio: <span id="lblOeeAvg" class="font-semibold">0%</span></div>
+      <div id="boxMachines" class="grid grid-cols-1 md:grid-cols-2 gap-3 max-h-72 overflow-auto pr-1"></div>
+    </div>
+  </section>
+
+  <section class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
+    <div class="bg-white rounded-2xl shadow-sm border border-slate-200/70 hover:shadow-md transition-shadow p-3">
+      <div class="flex items-center justify-between mb-2">
+        <div class="font-semibold">Defeitos (recentes)</div>
+        <button class="text-sm px-3 py-1 rounded-lg bg-gray-200 hover:bg-gray-300" onclick="clearDefects()">Limpar</button>
+      </div>
+      <div class="max-h-64 overflow-auto">
+        <table class="w-full text-sm">
+          <thead class="sticky top-0 bg-white z-10">
+            <tr class="text-left text-gray-500">
+              <th class="py-1 pr-2">Quando</th>
+              <th class="py-1 pr-2">Código</th>
+              <th class="py-1 pr-2">Estação</th>
+              <th class="py-1 pr-2">Sev.</th>
+            </tr>
+          </thead>
+          <tbody id="tblDefects" class="divide-y"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="bg-white rounded-2xl shadow p-3">
+      <div class="flex items-center justify-between mb-2">
+        <div class="font-semibold">Alertas</div>
+        <button class="text-sm px-3 py-1 rounded-lg bg-gray-200 hover:bg-gray-300" onclick="clearAlerts()">Limpar</button>
+      </div>
+      <div class="max-h-64 overflow-auto">
+        <table class="w-full text-sm">
+          <thead class="sticky top-0 bg-white z-10">
+            <tr class="text-left text-gray-500">
+              <th class="py-1 pr-2">Quando</th>
+              <th class="py-1 pr-2">Nível</th>
+              <th class="py-1 pr-2">Mensagem</th>
+              <th class="py-1 pr-2"></th>
+            </tr>
+          </thead>
+          <tbody id="tblAlerts" class="divide-y"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <section class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-10">
+    <div class="bg-white rounded-2xl shadow-sm border border-slate-200/70 hover:shadow-md transition-shadow p-4">
+      <div class="font-semibold mb-2">Exportação</div>
+      <p class="text-sm text-gray-600 mb-3">Baixe planilhas (CSVs) ou gere um relatório visual.</p>
+      <div class="grid grid-cols-1 gap-2">
+        <button class="px-3 py-2 rounded-xl bg-sky-600 text-white hover:bg-sky-700" onclick="generateHtmlReport()">Gerar Relatório (PDF/Imprimir)</button>
+        <button class="px-3 py-2 rounded-xl bg-gray-900 text-white hover:bg-black" onclick="exportCSVAll()">Exportar tudo (.zip)</button>
+        <div class="grid grid-cols-2 gap-2">
+          <button class="px-3 py-2 rounded-xl bg-gray-800 text-white hover:bg-gray-900" onclick="exportCSVHistory()">Histórico</button>
+          <button class="px-3 py-2 rounded-xl bg-rose-600 text-white hover:bg-rose-700" onclick="exportCSVDefects()">Defeitos</button>
+        </div>
+        <div class="grid grid-cols-2 gap-2">
+          <button class="px-3 py-2 rounded-xl bg-amber-600 text-white hover:bg-amber-700" onclick="exportCSVAlerts()">Alertas</button>
+          <button class="px-3 py-2 rounded-xl bg-indigo-600 text-white hover:bg-indigo-700" onclick="exportCSVMachines()">Máquinas</button>
+        </div>
+      </div>
+    </div>
+    <div class="bg-white rounded-2xl shadow-sm border border-slate-200/70 hover:shadow-md transition-shadow p-4">
+      <div class="font-semibold mb-2">Limpeza de dados</div>
+      <div class="grid grid-cols-2 gap-2">
+        <button class="px-3 py-2 rounded-xl bg-gray-200 hover:bg-gray-300" onclick="clearHistory()">Limpar Histórico</button>
+        <button class="px-3 py-2 rounded-xl bg-gray-200 hover:bg-gray-300" onclick="zeroAll()">Zerar Tudo</button>
+      </div>
+    </div>
+  </section>
+
+  <footer class="text-xs text-gray-500 mb-6">
+    <div>Exemplos de payloads esperados (JSON):</div>
+    <pre class="bg-gray-100 p-2 rounded-xl overflow-auto border border-slate-200/70">// {prefix}/line/production
+{"ts": 1735180800000, "units": 5, "stationId": "Corte"}
+
+// {prefix}/line/defect
+{"ts": 1735180800000, "code": "COSTURA", "stationId": "Costura2", "severity": "H"}
+
+// {prefix}/machines/01/status
+{"ts": 1735180800000, "id": "01", "state": "RUNNING", "oee": 78.2, "speed": 450, "uptime": 120}
+    </pre>
+  </footer>
+
+  <a href="https://guilherme-naue-medeiros-iofbs.chat.blip.ai/?appKey=ZWR1YWlib3Q6OWE1YzMwNTctYWJhMS00ZDExLTg0ODAtMjM3NjlhNjdjZTIw" 
+     target="_blank" 
+     rel="noopener noreferrer"
+     title="Ajuda - Chatbot"
+     class="fixed bottom-6 right-24 z-50 px-4 py-3 rounded-full bg-blue-600 text-white shadow-lg hover:bg-blue-700 focus:outline-none">
+    💬
+  </a>
+
+  <div id="accessibilityMenu" class="fixed bottom-6 right-6 z-50">
+    <button id="btnAccessibility" class="px-4 py-3 rounded-full bg-indigo-600 text-white shadow-lg hover:bg-indigo-700 focus:outline-none">
+      ♿
+    </button>
+    <div id="accessibilityOptions" class="hidden absolute bottom-full mb-2 bg-white rounded-xl shadow-xl p-3 w-56 right-0">
+      <p class="font-semibold mb-2">Acessibilidade</p>
+      <button onclick="increaseFont()" class="w-full text-left px-2 py-1 mb-1 rounded bg-gray-200 hover:bg-gray-300 text-sm">🔎 Aumentar Fonte</button>
+      <button onclick="decreaseFont()" class="w-full text-left px-2 py-1 mb-1 rounded bg-gray-200 hover:bg-gray-300 text-sm">🔍 Diminuir Fonte</button>
+      <button onclick="toggleContrast()" class="w-full text-left px-2 py-1 mb-1 rounded bg-gray-200 hover:bg-gray-300 text-sm">🌗 Contraste Alto</button>
+      <button onclick="speakSelection()" class="w-full text-left px-2 py-1 mb-1 rounded bg-gray-200 hover:bg-gray-300 text-sm">🗣️ Ler Texto Selecionado</button>
+      <button id="toggleSpeech" class="w-full text-left px-2 py-1 mb-1 rounded bg-gray-200 hover:bg-gray-300 text-sm">🔊 Ativar Leitura</button>
+      <button onclick="toggleCaptions()" class="w-full text-left px-2 py-1 rounded bg-gray-200 hover:bg-gray-300 text-sm">💬 Legendas</button>
+    </div>
+  </div>
+
+  <script>
+    document.addEventListener('DOMContentLoaded', () => {
+      // Abrir/fechar menu de acessibilidade
+      const btnAccessibility = document.getElementById("btnAccessibility");
+      const accessibilityOptions = document.getElementById("accessibilityOptions");
+
+      btnAccessibility.addEventListener("click", (event) => {
+        accessibilityOptions.classList.toggle("hidden");
+        event.stopPropagation(); // Evita que o clique feche o menu imediatamente
+      });
+
+      // Fecha o menu se clicar fora dele
+      document.addEventListener("click", (event) => {
+        if (!accessibilityOptions.classList.contains('hidden') && !btnAccessibility.contains(event.target)) {
+          accessibilityOptions.classList.add("hidden");
+        }
+      });
+    });
+
+    // -------- Funções de Acessibilidade --------
+    let fontSize = 100;
+    function increaseFont() {
+      fontSize += 10;
+      document.body.style.fontSize = fontSize + "%";
+    }
+    function decreaseFont() {
+      fontSize = Math.max(80, fontSize - 10);
+      document.body.style.fontSize = fontSize + "%";
+    }
+
+    function toggleContrast() {
+      document.body.classList.toggle("contrast");
+    }
+
+    function speakSelection() {
+      if ('speechSynthesis' in window) {
+        const synth = window.speechSynthesis;
+        let text = window.getSelection().toString().trim();
+        if (!text) {
+          text = "Nenhum texto selecionado para leitura.";
+        }
+        const utter = new SpeechSynthesisUtterance(text);
+        utter.lang = "pt-BR";
+        synth.cancel(); // interrompe fala anterior
+        synth.speak(utter);
+      } else {
+        alert("Seu navegador não suporta a leitura de texto.");
+      }
+    }
+    
+    let isSpeechEnabled = false;
+    document.getElementById('toggleSpeech').addEventListener('click', () => {
+        isSpeechEnabled = !isSpeechEnabled;
+        const btn = document.getElementById('toggleSpeech');
+        // ---------- Leitura automática ao clicar em botões ----------
+function speak(text) {
+  if (!isSpeechEnabled) return;        // só fala se estiver ativado
+  if (!('speechSynthesis' in window)) return;
+
+  const u = new SpeechSynthesisUtterance(text);
+  u.lang = "pt-BR";
+  speechSynthesis.cancel();            // interrompe fala anterior
+  speechSynthesis.speak(u);
+}
+
+// Captura todos os cliques em botões
+document.addEventListener("click", (e) => {
+  const btn = e.target.closest("button");
+  if (!btn) return;
+
+  // não ler o próprio botão de toggleSpeech
+  if (btn.id === "toggleSpeech") return;
+
+  // tenta achar uma label amigável
+  const label =
+    btn.dataset.announce ||
+    btn.getAttribute("aria-label") ||
+    btn.innerText.trim() ||
+    "botão sem nome";
+
+  speak("Você clicou no botão " + label);
+});
+
+        if(isSpeechEnabled) {
+            btn.textContent = '🔊 Desativar Leitura';
+            alert('Leitura automática ativada (recurso de exemplo).');
+        } else {
+            btn.textContent = '🔊 Ativar Leitura';
+            alert('Leitura automática desativada.');
+        }
+    });
+
+    function toggleCaptions() {
+      alert("⚠️ Recurso de legendas simuladas ativado (útil em vídeos e sons).");
+    }
+  </script>
+
+  <script>
+    // ------------------ Constantes / Estado ------------------
+    const LS_KEYS = {
+      SETTINGS: "iot_pjs_settings_html",
+      HISTORY: "iot_pjs_history_html",
+      DEFECTS: "iot_pjs_defects_html",
+      ALERTS:  "iot_pjs_alerts_html",
+    };
+
+    const DEFAULT_SETTINGS = {
+     url: "wss://broker.emqx.io:8084/mqtt",
+     username: "",
+      password: "",
+      prefix: "pijamas",
+      target: 1000,
+    };
+
+    const MAX_POINTS = 5000;
+
+    let client = null;
+    let connected = false;
+    
+    // ✅ ALTERADO: Variáveis de estado da simulação
+    let simulating = false; // Controla se o modo simulação está ativo
+    let isPaused = false;   // Controla se a simulação está pausada
+    let simTimers = [];
+    let pauseStartTime = 0;
+    let pauseTimerInterval = null;
+
+    // Métricas tempo real
+    let temp = null;
+    let hum = null;
+    let production = 0;
+    let target = DEFAULT_SETTINGS.target;
+
+    // Histórico, defeitos, alertas, máquinas
+    let history = [];
+    let defects = [];
+    let alerts = [];
+    let machines = {}; // id -> obj
+
+    // --------------- Util ----------------
+    const $ = (sel) => document.querySelector(sel);
+    const fmtTs = (ts) => new Date(ts).toLocaleString();
+
+    function loadSettings() {
+      try {
+        const s = JSON.parse(localStorage.getItem(LS_KEYS.SETTINGS)) || DEFAULT_SETTINGS;
+        $("#inpUrl").value = s.url;
+        $("#inpUser").value = s.username;
+        $("#inpPass").value = s.password;
+        $("#inpPrefix").value = s.prefix;
+        target = Number(s.target || DEFAULT_SETTINGS.target);
+        $("#inpTarget").value = target;
+        updateKpis();
+      } catch {}
+    }
+
+    function saveSettings() {
+      const s = {
+        url: $("#inpUrl").value || DEFAULT_SETTINGS.url,
+        username: $("#inpUser").value || "",
+        password: $("#inpPass").value || "",
+        prefix: $("#inpPrefix").value || DEFAULT_SETTINGS.prefix,
+        target: Number($("#inpTarget").value || DEFAULT_SETTINGS.target)
+      };
+      localStorage.setItem(LS_KEYS.SETTINGS, JSON.stringify(s));
+      return s;
+    }
+
+    function persistAll() {
+      localStorage.setItem(LS_KEYS.HISTORY, JSON.stringify(history));
+      localStorage.setItem(LS_KEYS.DEFECTS, JSON.stringify(defects));
+      localStorage.setItem(LS_KEYS.ALERTS, JSON.stringify(alerts));
+    }
+
+    function loadPersisted() {
+      try { history = JSON.parse(localStorage.getItem(LS_KEYS.HISTORY)) || []; } catch { history = []; }
+      try { defects = JSON.parse(localStorage.getItem(LS_KEYS.DEFECTS)) || []; } catch { defects = []; }
+      try { alerts  = JSON.parse(localStorage.getItem(LS_KEYS.ALERTS))  || []; } catch { alerts  = []; }
+    }
+
+    function pushHistory(pt) {
+      history.push(pt);
+      if (history.length > MAX_POINTS) history.splice(0, history.length - MAX_POINTS);
+    }
+
+    // --------------- MQTT / Simulação ----------------
+    function setStatus(text, ok) {
+      const el = $("#statusBadge");
+      el.textContent = text;
+      el.className = `px-3 py-1 rounded-full text-sm ${ok ? 'bg-green-100 text-green-700' : text.startsWith('Erro') ? 'bg-rose-100 text-rose-700' : 'bg-red-100 text-red-700'}`;
+    }
+
+    function getPrefix() {
+      return $("#inpPrefix").value || DEFAULT_SETTINGS.prefix;
+    }
+
+    function connect() {
+      const s = saveSettings();
+      if (client) { try { client.end(true); } catch {} }
+      setStatus('Conectando...', false);
+
+      client = mqtt.connect(s.url, {
+        username: s.username || undefined,
+        password: s.password || undefined,
+        reconnectPeriod: 3000,
+        keepalive: 30,
+        clean: true,
+      });
+
+      client.on('connect', () => {
+        connected = true;
+        setStatus('Conectado', true);
+        $("#btnConnect").classList.add('hidden');
+        $("#btnDisconnect").classList.remove('hidden');
+        client.subscribe(`${s.prefix}/#`);
+      });
+
+      client.on('reconnect', () => setStatus('Reconectando...', false));
+      client.on('close', () => { connected = false; setStatus('Desconectado', false); $("#btnDisconnect").classList.add('hidden'); $("#btnConnect").classList.remove('hidden'); });
+      client.on('error', (err) => setStatus('Erro: ' + (err?.message || ''), false));
+
+      client.on('message', (topic, payloadBuf) => {
+        const payload = payloadBuf.toString();
+        handleMessage(topic, payload);
+      });
+    }
+
+    function handleMessage(topic, payload) {
+      const now = Date.now();
+      const p = getPrefix();
+      try {
+        if (topic === `${p}/env/temp`) {
+          const v = parseFloat(payload);
+          if (!Number.isNaN(v)) temp = v;
+          pushHistory({ ts: now, temp: v });
+          updateEnv();
+        } else if (topic === `${p}/env/hum`) {
+          const v = parseFloat(payload);
+          if (!Number.isNaN(v)) hum = v;
+          pushHistory({ ts: now, hum: v });
+          updateEnv();
+        } else if (topic === `${p}/line/production`) {
+          const obj = JSON.parse(payload);
+          const inc = Number(obj?.units || 0);
+          production += inc;
+          pushHistory({ ts: obj?.ts || now, units: inc, stationId: obj?.stationId });
+          updateKpis();
+          refreshProdChart();
+        } else if (topic === `${p}/line/defect`) {
+          const d = JSON.parse(payload);
+          const item = { ts: d?.ts || now, code: d?.code || 'UNK', stationId: d?.stationId || '?', severity: d?.severity || 'M' };
+          defects.unshift(item);
+          defects = defects.slice(0, 5000);
+          renderDefectsTable();
+          refreshDefectsChart();
+        } else if (topic.startsWith(`${p}/machines/`) && topic.endsWith('/status')) {
+          const m = JSON.parse(payload);
+          machines[m.id || 'M?'] = { ...m };
+          renderMachines();
+        } else if (topic === `${p}/alerts`) {
+          const a = JSON.parse(payload);
+          const item = { ts: a?.ts || now, level: a?.level || 'info', text: a?.text || '' };
+          alerts.unshift(item);
+          alerts = alerts.slice(0, 2000);
+          renderAlertsTable();
+        }
+      } catch (e) {
+        console.error('Erro parse payload', topic, payload, e);
+      }
+      if (Math.random() < 0.1) persistAll();
+    }
+
+    function disconnect() {
+      if (client) { try { client.end(true); } catch {} }
+      client = null;
+    }
+
+    // ✅ NOVO: Função para iniciar ou resumir a simulação
+    function startLine() {
+        if (!simulating) { // Primeiro clique
+            simulating = true;
+            disconnect(); // Garante que não há conexão MQTT real
+            setStatus('Simulando (offline)', true);
+            // Inicia com valores aleatórios se não existirem
+            if (temp === null) temp = 24 + Math.random() * 2;
+            if (hum === null) hum = 55 + Math.random() * 5;
+            updateEnv();
+        }
+        
+        if (isPaused) { // Se estava pausado, apenas resume
+            isPaused = false;
+            $('#pausedIndicator').classList.add('hidden');
+            if(pauseTimerInterval) clearInterval(pauseTimerInterval);
+            pauseTimerInterval = null;
+        }
+        
+        runSimulators(); // Inicia os geradores de eventos
+    }
+
+    // ✅ NOVO: Função para pausar a simulação
+    function stopLine() {
+        if (!simulating || isPaused) return; // Só pausa se estiver simulando e rodando
+        
+        isPaused = true;
+        simTimers.forEach(t => clearInterval(t)); // Para todos os geradores de eventos
+        simTimers = [];
+
+        // Mostra o indicador de pausa e inicia o cronômetro
+        $('#pausedIndicator').classList.remove('hidden');
+        pauseStartTime = Date.now();
+        $('#pausedTimer').textContent = '0s';
+
+        if (pauseTimerInterval) clearInterval(pauseTimerInterval);
+        pauseTimerInterval = setInterval(() => {
+            const seconds = Math.floor((Date.now() - pauseStartTime) / 1000);
+            const minutes = Math.floor(seconds / 60);
+            const remSeconds = seconds % 60;
+            $('#pausedTimer').textContent = `${minutes}m ${remSeconds}s`;
+        }, 1000);
+    }
+    
+    // ✅ NOVO: Função que contém apenas os timers da simulação
+    function runSimulators() {
+      if (simTimers.length > 0) return; // Previne múltiplos timers
+      const p = getPrefix();
+
+      // Env: a cada 2s
+      simTimers.push(setInterval(() => {
+        if(isPaused) return;
+        temp += (Math.random()-0.5)*0.3;
+        hum  += (Math.random()-0.5)*0.8;
+        handleMessage(`${p}/env/temp`, String(Number(temp.toFixed(2))));
+        handleMessage(`${p}/env/hum`, String(Number(hum.toFixed(2))));
+      }, 2000));
+
+      // Produção: a cada ~1.2s
+      simTimers.push(setInterval(() => {
+        if(isPaused) return;
+        const units = Math.random() < 0.2 ? 0 : Math.ceil(Math.random()*5);
+        if (units > 0) {
+            const payload = JSON.stringify({ ts: Date.now(), units, stationId: ['Corte','Costura1','Costura2','Acabamento'][Math.floor(Math.random()*4)] });
+            handleMessage(`${p}/line/production`, payload);
+        }
+      }, 1200));
+
+      // Defeitos: chance 10% a cada 4s
+      simTimers.push(setInterval(() => {
+        if(isPaused) return;
+        if (Math.random() < 0.1) {
+          const payload = JSON.stringify({ ts: Date.now(), code: ['COSTURA','CORTE','MANCHA','ETIQUETA'][Math.floor(Math.random()*4)], stationId: ['Costura1','Costura2','Acabamento'][Math.floor(Math.random()*3)], severity: ['L','M','H'][Math.floor(Math.random()*3)] });
+          handleMessage(`${p}/line/defect`, payload);
+        }
+      }, 4000));
+
+      // Máquinas: status a cada 5s
+      simTimers.push(setInterval(() => {
+        if(isPaused) return;
+        const ids = ['01','02','03','04','05'];
+        ids.forEach((id) => {
+          const state = Math.random()<0.7?'RUNNING':(Math.random()<0.5?'SETUP':'FAULT');
+          const payload = JSON.stringify({ ts: Date.now(), id, state, oee: Math.round((60+Math.random()*35)*10)/10, speed: Math.round(400+Math.random()*200), uptime: Math.round(Math.random()*600) });
+          handleMessage(`${p}/machines/${id}/status`, payload);
+        });
+      }, 5000));
+
+      // Alertas: chance 6% a cada 6s
+      simTimers.push(setInterval(() => {
+        if(isPaused) return;
+        if (Math.random() < 0.06) {
+          const payload = JSON.stringify({ ts: Date.now(), level: ['info','warn','error'][Math.floor(Math.random()*3)], text: ['Material baixo','Filtro entupido','Tempo de setup alto','Qualidade abaixo do alvo'][Math.floor(Math.random()*4)] });
+          handleMessage(`${p}/alerts`, payload);
+        }
+      }, 6000));
+    }
+
+    function publishCmd(action, value) {
+      if (!client || !connected) return;
+      const s = saveSettings();
+      const msg = JSON.stringify({ action, value, ts: Date.now() });
+      client.publish(`${s.prefix}/cmd`, msg, { qos: 0, retain: false });
+    }
+
+    // --------------- UI helpers ----------------
+    function updateKpis() {
+      $("#lblProduction").textContent = production;
+      const t = Number($("#inpTarget").value || target || 0);
+      $("#lblTarget").textContent = t;
+      const pct = t ? Math.min(100, Math.round((production / t) * 100)) : 0;
+      $("#lblHit").textContent = pct + '%';
+    }
+
+    function updateEnv() {
+      $("#lblTemp").textContent = temp == null ? '--' : `${temp.toFixed(1)} °C`;
+      $("#lblHum").textContent  = hum  == null ? '--' : `${hum.toFixed(1)} %`;
+      refreshEnvChart();
+    }
+
+    function sendTarget() {
+      target = Number($("#inpTarget").value || 0);
+      saveSettings();
+      updateKpis();
+      publishCmd('TARGET', target);
+    }
+
+    function resetCounters() {
+      production = 0;
+      updateKpis();
+      publishCmd('RESET');
+    }
+
+    function clearHistory() { history = []; refreshProdChart(); refreshEnvChart(); persistAll(); }
+    function zeroAll() { 
+      // Para completamente a simulação antes de zerar
+      simulating = false;
+      isPaused = false;
+      simTimers.forEach(t => clearInterval(t));
+      simTimers = [];
+      if(pauseTimerInterval) clearInterval(pauseTimerInterval);
+      $('#pausedIndicator').classList.add('hidden');
+      setStatus('Desconectado', false);
+      
+      production = 0; 
+      defects = []; 
+      alerts = []; 
+      machines = {}; 
+      updateKpis(); 
+      renderDefectsTable(); 
+      renderAlertsTable(); 
+      renderMachines(); 
+      refreshDefectsChart(); 
+      persistAll(); 
+    }
+    function clearDefects() { defects = []; renderDefectsTable(); refreshDefectsChart(); persistAll(); }
+    function clearAlerts() { alerts = []; renderAlertsTable(); persistAll(); }
+
+    // ---------- Exportação (planilhas organizadas) ----------
+    function toCsv(rows, delimiter = ';') {
+      const needsQuote = new RegExp(`["${delimiter}\\n]`);
+      const esc = (v) => {
+        if (v == null) return '';
+        const s = String(v);
+        if (needsQuote.test(s)) return '"' + s.replace(/"/g,'""') + '"';
+        return s;
+      };
+      return rows.map(r => r.map(esc).join(delimiter)).join('\n');
+    }
+
+    function download(data, filename, type = 'text/csv;charset=utf-8;') {
+      const blob = new Blob(['\ufeff' + data], { type });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
+    }
+
+    function sortByTsAsc(list) {
+      return [...list].sort((a,b) => (a.ts||0) - (b.ts||0));
+    }
+
+    function fmtDate(ts) {
+      const d = new Date(ts || 0);
+      const y = d.getFullYear();
+      const m = String(d.getMonth()+1).padStart(2,'0');
+      const day = String(d.getDate()).padStart(2,'0');
+      return `${day}/${m}/${y}`;
+    }
+
+    function fmtTime(ts) {
+      const d = new Date(ts || 0);
+      const hh = String(d.getHours()).padStart(2,'0');
+      const mm = String(d.getMinutes()).padStart(2,'0');
+      const ss = String(d.getSeconds()).padStart(2,'0');
+      return `${hh}:${mm}:${ss}`;
+    }
+
+    function exportCSVHistory() {
+      const rows = [["ts","data","hora","temperatura","umidade","unidades","estacao"], ...sortByTsAsc(history).map(h => [h.ts ?? '', fmtDate(h.ts), fmtTime(h.ts), h.temp ?? '', h.hum ?? '', h.units ?? '', h.stationId ?? ''])];
+      download(toCsv(rows), `historico_${new Date().toISOString()}.csv`);
+    }
+
+    function exportCSVDefects() {
+      const rows = [["ts","data","hora","codigo","estacao","severidade"], ...sortByTsAsc(defects).map(d => [d.ts ?? '', fmtDate(d.ts), fmtTime(d.ts), d.code ?? '', d.stationId ?? '', d.severity ?? ''])];
+      download(toCsv(rows), `defeitos_${new Date().toISOString()}.csv`);
+    }
+
+    function exportCSVAlerts() {
+      const rows = [["ts","data","hora","nivel","mensagem"], ...sortByTsAsc(alerts).map(a => [a.ts ?? '', fmtDate(a.ts), fmtTime(a.ts), a.level ?? '', a.text ?? ''])];
+      download(toCsv(rows), `alertas_${new Date().toISOString()}.csv`);
+    }
+
+    function exportCSVMachines() {
+      const rows = [["ts","data","hora","id","estado","oee","velocidade","uptime_min"], ...Object.values(machines)
+        .sort((a,b) => String(a.id).localeCompare(String(b.id)) || (a.ts||0)-(b.ts||0))
+        .map(m => [m.ts ?? '', fmtDate(m.ts), fmtTime(m.ts), m.id ?? '', m.state ?? '', m.oee ?? '', m.speed ?? '', m.uptime ?? ''])];
+      download(toCsv(rows), `maquinas_${new Date().toISOString()}.csv`);
+    }
+
+    async function exportCSVAll() {
+      exportCSVHistory();
+      setTimeout(exportCSVDefects, 200);
+      setTimeout(exportCSVAlerts, 400);
+      setTimeout(exportCSVMachines, 600);
+    }
+
+    function renderDefectsTable() {
+      const tb = $("#tblDefects");
+      tb.innerHTML = '';
+      if (!defects.length) {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `<td class="py-2 text-gray-500" colspan="4">Nenhum defeito registrado.</td>`;
+        tb.appendChild(tr);
+        return;
+      }
+      defects.forEach((d, i) => {
+        const tr = document.createElement('tr');
+        tr.className = i % 2 === 0 ? 'bg-white' : 'bg-gray-50';
+        tr.innerHTML = `<td class="py-1 pr-2 whitespace-nowrap">${fmtTs(d.ts)}</td>
+                        <td class="py-1 pr-2">${d.code}</td>
+                        <td class="py-1 pr-2">${d.stationId}</td>
+                        <td class="py-1 pr-2">${d.severity}</td>`;
+        tb.appendChild(tr);
+      });
+    }
+
+    function renderAlertsTable() {
+      const tb = $("#tblAlerts");
+      tb.innerHTML = '';
+      if (!alerts.length) {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `<td class="py-2 text-gray-500" colspan="4">Sem alertas.</td>`;
+        tb.appendChild(tr);
+        return;
+      }
+      alerts.forEach((a, i) => {
+        const tr = document.createElement('tr');
+        tr.className = i % 2 === 0 ? 'bg-white' : 'bg-gray-50';
+        const ackBtn = `<button class="px-2 py-1 text-xs rounded bg-gray-200 hover:bg-gray-300" onclick="publishCmd('ACK', ${a.ts})">Acknowledge</button>`;
+        tr.innerHTML = `<td class="py-1 pr-2 whitespace-nowrap">${fmtTs(a.ts)}</td>
+                        <td class="py-1 pr-2">${a.level}</td>
+                        <td class="py-1 pr-2">${a.text}</td>
+                        <td class="py-1 pr-2">${ackBtn}</td>`;
+        tb.appendChild(tr);
+      });
+    }
+
+    function renderMachines() {
+      const box = $("#boxMachines");
+      box.innerHTML = '';
+      const vals = Object.values(machines);
+      if (!vals.length) {
+        box.innerHTML = `<div class="text-gray-500">Sem dados de máquinas ainda.</div>`;
+      }
+      let sum = 0;
+      vals.forEach((m) => { sum += Number(m.oee || 0); });
+      const oeeAvg = vals.length ? Math.round((sum / vals.length) * 10) / 10 : 0;
+      $("#lblOeeAvg").textContent = `${oeeAvg}%`;
+
+      vals.forEach((m) => {
+        const tag = document.createElement('div');
+        const stateClass = m.state === 'RUNNING' ? 'bg-green-100 text-green-700' : m.state === 'FAULT' ? 'bg-rose-100 text-rose-700' : m.state === 'SETUP' ? 'bg-amber-100 text-amber-700' : 'bg-gray-100 text-gray-700';
+        tag.className = 'border rounded-xl p-3';
+        tag.innerHTML = `
+          <div class="flex items-center justify-between">
+            <div class="font-semibold">Máquina ${m.id}</div>
+            <span class="text-xs px-2 py-1 rounded-full ${stateClass}">${m.state}</span>
+          </div>
+          <div class="text-sm mt-1">OEE: ${m.oee}% · Vel.: ${m.speed}/h · Uptime: ${m.uptime} min</div>
+          <div class="text-xs text-gray-500">Atualizado: ${fmtTs(m.ts)}</div>
+        `;
+        box.appendChild(tag);
+      });
+    }
+
+    // --------------- Agregações para gráficos ----------------
+    function seriesProductionPerMinute() {
+      const map = new Map();
+      for (const h of history) {
+        if (!h.units) continue;
+        const min = Math.floor((h.ts || 0) / 60000) * 60000;
+        map.set(min, (map.get(min) || 0) + h.units);
+      }
+      return Array.from(map.entries()).sort((a,b)=>a[0]-b[0]).map(([ts, units]) => ({ ts, units }));
+    }
+
+    function seriesEnvPerMinute() {
+      const byMin = new Map();
+      for (const h of history) {
+        if (h.temp == null && h.hum == null) continue;
+        const min = Math.floor((h.ts || 0) / 60000) * 60000;
+        const cur = byMin.get(min) || { ts: min, temp: null, hum: null, c: 0 };
+        cur.temp = avg(cur.temp, h.temp);
+        cur.hum = avg(cur.hum, h.hum);
+        cur.c += 1;
+        byMin.set(min, cur);
+      }
+      return Array.from(byMin.values()).sort((a,b)=>a.ts-b.ts);
+    }
+
+    function topDefects() {
+      const map = new Map();
+      for (const d of defects) map.set(d.code, (map.get(d.code) || 0) + 1);
+      return Array.from(map.entries()).sort((a,b)=>b[1]-a[1]).slice(0,8).map(([code, qty]) => ({ code, qty }));
+    }
+
+    const avg = (a,b) => (a==null?b:(b==null?a:((Number(a)+Number(b))/2)));
+
+    // --------------- Chart.js ----------------
+    let chartProd, chartEnv, chartDef;
+
+    function refreshProdChart() {
+      const data = seriesProductionPerMinute();
+      const labels = data.map(d => new Date(d.ts).toLocaleTimeString());
+      const values = data.map(d => d.units);
+      if (!chartProd) {
+        chartProd = new Chart(document.getElementById('chartProduction'), {
+          type: 'line',
+          data: { labels, datasets: [{ label: 'Unidades/min', data: values, fill: true, tension: 0.3 }] },
+          options: { responsive: true, maintainAspectRatio: false, scales: { y: { beginAtZero: true } }, plugins: { legend: { display: false } } }
+        });
+      } else {
+        chartProd.data.labels = labels;
+        chartProd.data.datasets[0].data = values;
+        chartProd.update('none');
+      }
+    }
+
+    function refreshEnvChart() {
+      const data = seriesEnvPerMinute();
+      const labels = data.map(d => new Date(d.ts).toLocaleTimeString());
+      const tvals = data.map(d => d.temp);
+      const hvals = data.map(d => d.hum);
+      if (!chartEnv) {
+        chartEnv = new Chart(document.getElementById('chartEnv'), {
+          type: 'line',
+          data: { labels, datasets: [
+            { label: 'Temp (°C)', data: tvals, tension: 0.3 },
+            { label: 'Umidade (%)', data: hvals, tension: 0.3 },
+          ] },
+          options: { responsive: true, maintainAspectRatio: false, scales: { y: { beginAtZero: false } } }
+        });
+      } else {
+        chartEnv.data.labels = labels;
+        chartEnv.data.datasets[0].data = tvals;
+        chartEnv.data.datasets[1].data = hvals;
+        chartEnv.update('none');
+      }
+    }
+
+    function refreshDefectsChart() {
+      const data = topDefects();
+      const labels = data.map(d => d.code);
+      const values = data.map(d => d.qty);
+      if (!chartDef) {
+        chartDef = new Chart(document.getElementById('chartDefects'), {
+          type: 'bar',
+          data: { labels, datasets: [{ label: 'Qtde', data: values }] },
+          options: { responsive: true, maintainAspectRatio: false, scales: { y: { beginAtZero: true } }, plugins: { legend: { display: false } } }
+        });
+      } else {
+        chartDef.data.labels = labels;
+        chartDef.data.datasets[0].data = values;
+        chartDef.update('none');
+      }
+    }
+
+    // ==================================================================
+    // FUNÇÃO PARA GERAR RELATÓRIO VISUAL (PDF/IMPRESSÃO)
+    // ==================================================================
+    function generateHtmlReport() {
+      // 1. Capturar imagens dos gráficos
+      const chartProdImg = chartProd ? chartProd.toBase64Image() : '';
+      const chartDefectsImg = chartDef ? chartDef.toBase64Image() : '';
+      const chartEnvImg = chartEnv ? chartEnv.toBase64Image() : '';
+
+      // 2. Coletar KPIs
+      const kpisHtml = `
+        <div style="display: flex; gap: 2rem; margin-top: 1rem; padding: 1rem; background-color: #f9fafb; border: 1px solid #e5e7eb; border-radius: 8px;">
+          <div><strong>Produção Total:</strong> ${$("#lblProduction").textContent}</div>
+          <div><strong>Meta:</strong> ${$("#lblTarget").textContent}</div>
+          <div><strong>Atingido:</strong> ${$("#lblHit").textContent}</div>
+          <div><strong>OEE Médio:</strong> ${$("#lblOeeAvg").textContent}</div>
+        </div>
+      `;
+
+      // 3. Construir o HTML das tabelas de dados
+      const defectsHtml = `
+        <h2 style="font-size: 1.5em; margin-top: 2rem; border-bottom: 2px solid #1e3a8a; padding-bottom: 0.5rem; color: #1e3a8a;">Tabela de Defeitos</h2>
+        ${defects.length === 0 ? '<p>Nenhum defeito registrado.</p>' : `
+        <table style="width: 100%; border-collapse: collapse; margin-top: 1rem;">
+          <thead style="background-color: #f3f4f6;">
+            <tr>
+              <th style="padding: 8px; border: 1px solid #ddd; text-align: left;">Quando</th>
+              <th style="padding: 8px; border: 1px solid #ddd; text-align: left;">Código</th>
+              <th style="padding: 8px; border: 1px solid #ddd; text-align: left;">Estação</th>
+              <th style="padding: 8px; border: 1px solid #ddd; text-align: left;">Severidade</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${sortByTsAsc(defects).map(d => `
+              <tr>
+                <td style="padding: 8px; border: 1px solid #ddd;">${fmtTs(d.ts)}</td>
+                <td style="padding: 8px; border: 1px solid #ddd;">${d.code}</td>
+                <td style="padding: 8px; border: 1px solid #ddd;">${d.stationId}</td>
+                <td style="padding: 8px; border: 1px solid #ddd;">${d.severity}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>`}
+      `;
+
+      const alertsHtml = `
+        <h2 style="font-size: 1.5em; margin-top: 2rem; border-bottom: 2px solid #1e3a8a; padding-bottom: 0.5rem; color: #1e3a8a;">Tabela de Alertas</h2>
+        ${alerts.length === 0 ? '<p>Nenhum alerta registrado.</p>' : `
+        <table style="width: 100%; border-collapse: collapse; margin-top: 1rem;">
+          <thead style="background-color: #f3f4f6;">
+            <tr>
+              <th style="padding: 8px; border: 1px solid #ddd; text-align: left;">Quando</th>
+              <th style="padding: 8px; border: 1px solid #ddd; text-align: left;">Nível</th>
+              <th style="padding: 8px; border: 1px solid #ddd; text-align: left;">Mensagem</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${sortByTsAsc(alerts).map(a => `
+              <tr>
+                <td style="padding: 8px; border: 1px solid #ddd;">${fmtTs(a.ts)}</td>
+                <td style="padding: 8px; border: 1px solid #ddd;">${a.level}</td>
+                <td style="padding: 8px; border: 1px solid #ddd;">${a.text}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>`}
+      `;
+
+      // 4. Montar a página HTML completa do relatório
+      const reportHtml = `
+        <!DOCTYPE html>
+        <html lang="pt-BR">
+        <head>
+          <meta charset="UTF-8">
+          <title>Relatório de Produção – ${new Date().toLocaleString()}</title>
+          <style>
+            body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; margin: 2rem; color: #333; }
+            h1 { color: #1e3a8a; }
+            img { max-width: 90%; height: auto; border: 1px solid #eee; margin-top: 1rem; page-break-inside: avoid; }
+            table { page-break-inside: auto; }
+            tr { page-break-inside: avoid; page-break-after: auto; }
+            @page { size: A4; margin: 1in; }
+            @media print {
+              body { margin: 0.5rem; }
+              .no-print { display: none; }
+              h2 { page-break-after: avoid; }
+            }
+          </style>
+        </head>
+        <body>
+          <h1>Relatório de Produção</h1>
+          <p>Gerado em: ${new Date().toLocaleString()}</p>
+          <button class="no-print" onclick="window.print()" style="padding: 10px 15px; background-color: #2563eb; color: white; border: none; border-radius: 5px; cursor: pointer; font-size: 16px;">Imprimir ou Salvar como PDF</button>
+
+          <h2 style="font-size: 1.5em; margin-top: 2rem; border-bottom: 2px solid #1e3a8a; padding-bottom: 0.5rem; color: #1e3a8a;">Indicadores Chave (KPIs)</h2>
+          ${kpisHtml}
+
+          <h2 style="font-size: 1.5em; margin-top: 2rem; border-bottom: 2px solid #1e3a8a; padding-bottom: 0.5rem; color: #1e3a8a;">Gráficos</h2>
+          <div>
+            <h3>Produção por Minuto</h3>
+            <img src="${chartProdImg}" alt="Gráfico de Produção">
+          </div>
+          <div style="margin-top: 1.5rem;">
+            <h3>Top Defeitos</h3>
+            <img src="${chartDefectsImg}" alt="Gráfico de Defeitos">
+          </div>
+          <div style="margin-top: 1.5rem;">
+            <h3>Temperatura & Umidade</h3>
+            <img src="${chartEnvImg}" alt="Gráfico de Ambiente">
+          </div>
+          
+          ${defectsHtml}
+          ${alertsHtml}
+
+        </body>
+        </html>
+      `;
+
+      // 5. Abrir o HTML gerado em uma nova aba
+      const reportWindow = window.open('', '_blank');
+      reportWindow.document.write(reportHtml);
+      reportWindow.document.close();
+    }
+
+    // --------------- Eventos iniciais ----------------
+    function bindButtons() {
+      $("#btnConnect").addEventListener('click', connect);
+      $("#btnDisconnect").addEventListener('click', disconnect);
+      ["#inpUrl", "#inpUser", "#inpPass", "#inpPrefix", "#inpTarget"].forEach(sel => $(sel).addEventListener('change', saveSettings));
+    }
+
+    function firstRender() {
+      loadSettings();
+      loadPersisted();
+      updateKpis();
+      updateEnv();
+      renderDefectsTable();
+      renderAlertsTable();
+      renderMachines();
+      refreshProdChart();
+      refreshEnvChart();
+      refreshDefectsChart();
+    }
+
+    document.addEventListener('DOMContentLoaded', () => {
+      bindButtons();
+      firstRender();
+    });
+  </script>
+</body>
+</html>
